@@ -1,1 +1,108 @@
+//+------------------------------------------------------------------+
+//|                                             partialclosed_EA.mq5 |
+//|                                                       efens king |
+//|                                             https://m3u8home.top |
+//+------------------------------------------------------------------+
+#property copyright "efens king"
+#property link      "https://m3u8home.top"
+#property version   "1.00"
+//+------------------------------------------------------------------+
+//| 黄金 (XAUUSD) 分批平仓 + 移动止损策略                            |
+//+------------------------------------------------------------------+
+#property strict
+#include <Trade/Trade.mqh>
+CTrade trade;
 
+// 参数设置
+input double Lots            = 0.5;        // 初始下单手数
+input double TargetRangeUSD  = 10.0;       // 目标盈利区间（美元）
+input int    TrailingStopPts = 300;        // 移动止损距离（点，黄金1点=0.01美元）
+
+// 黄金分割点位
+double fiboLevels[5] = {0.382, 0.618, 1};
+
+// 状态变量
+bool orderOpened = false;
+double initialPrice;
+bool closedLevels[5]; // 标记已平仓的黄金点位
+
+//+------------------------------------------------------------------+
+//| 初始化                                                           |
+//+------------------------------------------------------------------+
+int OnInit()
+{
+   ArrayInitialize(closedLevels, false);
+   Print("EA 启动：黄金分批平仓 + 移动止损策略");
+   return(INIT_SUCCEEDED);
+}
+
+//+------------------------------------------------------------------+
+//| 每个 Tick 执行                                                    |
+//+------------------------------------------------------------------+
+void OnTick()
+{
+   if(PositionSelect(_Symbol) && _Symbol == "XAUUSD")  // 只操作黄金
+   {
+      double openPrice    = PositionGetDouble(POSITION_PRICE_OPEN);
+      double volume       = PositionGetDouble(POSITION_VOLUME);
+      long   type         = PositionGetInteger(POSITION_TYPE); // 0=buy,1=sell
+      double currentPrice = (type == POSITION_TYPE_BUY) ? 
+                            SymbolInfoDouble(_Symbol, SYMBOL_BID) : 
+                            SymbolInfoDouble(_Symbol, SYMBOL_ASK);
+
+      // 初始化开仓价
+      if(!orderOpened)
+      {
+         initialPrice = openPrice;
+         orderOpened  = true;
+      }
+
+      // ===== 黄金点位分批平仓 =====
+      for(int i=0; i<ArraySize(fiboLevels); i++)
+      {
+         if(closedLevels[i]) continue; // 已经执行过
+
+         double targetPrice;
+         if(type == POSITION_TYPE_BUY)
+            targetPrice = initialPrice + TargetRangeUSD * fiboLevels[i]; // 上涨分批
+         else
+            targetPrice = initialPrice - TargetRangeUSD * fiboLevels[i]; // 下跌分批
+
+         if((type == POSITION_TYPE_BUY && currentPrice >= targetPrice) ||
+            (type == POSITION_TYPE_SELL && currentPrice <= targetPrice))
+         {
+            double closeLots = NormalizeDouble(Lots / (ArraySize(fiboLevels) + 1),2); // 均分仓位
+            if(volume > closeLots + 0.01) // 避免过度平仓
+            {
+               if(trade.PositionClosePartial(_Symbol, closeLots))
+               {
+                  closedLevels[i] = true;
+                  Print("黄金分批平仓：Level ", fiboLevels[i], 
+                        "，平 ", closeLots, " 手，价格：", currentPrice);
+               }
+            }
+         }
+      }
+
+      // ===== 移动止损 =====
+      double stopLoss = PositionGetDouble(POSITION_SL);
+      if(type == POSITION_TYPE_BUY)
+      {
+         double newSL = currentPrice - TrailingStopPts * _Point;
+         if(newSL > stopLoss && currentPrice > initialPrice)
+         {
+            trade.PositionModify(_Symbol, newSL, PositionGetDouble(POSITION_TP));
+            Print("移动止损更新(BUY)：", newSL);
+         }
+      }
+      else if(type == POSITION_TYPE_SELL)
+      {
+         double newSL = currentPrice + TrailingStopPts * _Point;
+         if((stopLoss == 0 || newSL < stopLoss) && currentPrice < initialPrice)
+         {
+            trade.PositionModify(_Symbol, newSL, PositionGetDouble(POSITION_TP));
+            Print("移动止损更新(SELL)：", newSL);
+         }
+      }
+   }
+}
